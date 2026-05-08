@@ -13,8 +13,7 @@ from datetime import datetime, timezone, timedelta
 
 BD_TZ = timedelta(hours=6)  # Bangladesh = UTC+6
 from config import PAGE_ACCESS_TOKEN, PAGE_ID
-from ai import (generate_comment_reply, generate_inbox_reply,
-                detect_operator, get_operator_package_list)
+from ai import generate_comment_reply, generate_inbox_reply, generate_health_post
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,17 +26,17 @@ POLL_INTERVAL = 15  # seconds between each check
 
 # ── Daily auto-post schedule ───────────────────────────────────────────────────
 AUTO_POSTS = [
-    ("14:20", "Robi"),
-    ("14:30", "Airtel"),
-    ("14:40", "Banglalink"),
-    ("14:50", "Gramenphone"),
-    ("15:00", "Skitto"),
+    ("12:00", "শিশুর বুকের দুধ খাওয়ানোর উপকারিতা ও সঠিক নিয়ম"),
+    ("12:10", "গর্ভকালীন পুষ্টি: মা ও শিশুর সুস্বাস্থ্যের জন্য কী খাবেন"),
+    ("12:20", "নবজাতক শিশুর যত্ন: প্রথম ৩০ দিনে কী করবেন"),
+    ("12:30", "শিশুর ঘুমের সঠিক অভ্যাস গড়ে তোলার উপায়"),
+    ("12:40", "শিশুর টিকা সময়সূচি: কোন বয়সে কোন টিকা দেবেন"),
+    ("12:50", "মায়ের প্রসব-পরবর্তী স্বাস্থ্য পুনরুদ্ধার"),
 ]
 
-_posted_today: set = set()  # tracks "HH:MM" already posted today
+_posted_today: set = set()
 _last_post_date = None
 
-# Remember what we already replied to (in-memory, resets on restart)
 replied_comments: set = set()
 replied_messages: set = set()
 
@@ -67,7 +66,7 @@ def get_comments(post_id):
             "access_token": PAGE_ACCESS_TOKEN,
             "filter": "stream",
             "limit": 25,
-            "fields": "id,from,message,created_time,can_reply_privately",
+            "fields": "id,from,message,created_time",
         },
         timeout=10,
     )
@@ -136,7 +135,7 @@ def get_conversations():
         timeout=10,
     )
     if not resp.ok:
-        logger.warning("Cannot fetch conversations (may need pages_messaging permission): %s", resp.text)
+        logger.warning("Cannot fetch conversations: %s", resp.text)
         return []
     return resp.json().get("data", [])
 
@@ -147,20 +146,18 @@ def get_messages_in_conversation(conv_id):
         params={
             "access_token": PAGE_ACCESS_TOKEN,
             "fields": "id,from,message,created_time,attachments",
-            "limit": 10,  # fetch last 10 for history context
+            "limit": 10,
         },
         timeout=10,
     )
     if not resp.ok:
         return []
-    # API returns newest first — reverse so oldest is first
     return list(reversed(resp.json().get("data", [])))
 
 
 def check_inbox(reply=True):
     conversations = get_conversations()
 
-    # Seeding mode: mark ALL existing user messages as seen so we never reply to old ones
     if not reply:
         for conv in conversations:
             for msg in get_messages_in_conversation(conv["id"]):
@@ -170,19 +167,17 @@ def check_inbox(reply=True):
                     replied_messages.add(mid)
         return
 
-    # Collect latest unreplied message from each conversation
     candidates = []
     conv_messages_map = {}
     for conv in conversations:
         messages = get_messages_in_conversation(conv["id"])
         conv_messages_map[conv["id"]] = messages
 
-        # If the last message is from the page, admin already handled it — skip
         last_msg = messages[-1] if messages else None
         if last_msg and last_msg.get("from", {}).get("id") == PAGE_ID:
             continue
 
-        for msg in reversed(messages):  # newest first
+        for msg in reversed(messages):
             mid = msg.get("id")
             sender_id = msg.get("from", {}).get("id", "")
             if not mid or sender_id == PAGE_ID:
@@ -194,12 +189,11 @@ def check_inbox(reply=True):
             if not text and not attachments:
                 continue
             candidates.append((msg, conv["id"]))
-            break  # one per conversation
+            break
 
     if not candidates:
         return
 
-    # Sort by created_time descending — process the most recent message first
     candidates.sort(key=lambda x: x[0].get("created_time", ""), reverse=True)
     latest_user_msg, conv_id = candidates[0]
     messages = conv_messages_map[conv_id]
@@ -212,29 +206,23 @@ def check_inbox(reply=True):
     attachments = latest_user_msg.get("attachments", {}).get("data", [])
     attach_types = {a.get("type", "") for a in attachments}
 
-    # Voice → ask for text
     if "audio" in attach_types:
         send_message(sender_id, "ভয়েস মেসেজ পড়তে পারি না। টেক্সটে লিখে পাঠান। 🙏")
         return
 
-    # Image only → ignore
     if "image" in attach_types and not user_text:
         return
 
-    operator = detect_operator(user_text)
+    history = []
+    for m in messages:
+        if m["id"] == mid:
+            break
+        role = "assistant" if m.get("from", {}).get("id") == PAGE_ID else "user"
+        if m.get("message"):
+            history.append({"role": role, "content": m["message"]})
 
-    if operator:
-        send_message(sender_id, get_operator_package_list(operator))
-    else:
-        history = []
-        for m in messages:
-            if m["id"] == mid:
-                break
-            role = "assistant" if m.get("from", {}).get("id") == PAGE_ID else "user"
-            if m.get("message"):
-                history.append({"role": role, "content": m["message"]})
-        ai_reply = generate_inbox_reply(user_text, history)
-        send_message(sender_id, ai_reply)
+    ai_reply = generate_inbox_reply(user_text, history)
+    send_message(sender_id, ai_reply)
 
 
 # ─── Daily scheduled post ─────────────────────────────────────────────────────
@@ -253,44 +241,35 @@ def post_to_page(message: str):
 
 def check_scheduled_post():
     global _last_post_date, _posted_today
-    now = datetime.now(timezone.utc) + BD_TZ  # Bangladesh time
+    now = datetime.now(timezone.utc) + BD_TZ
     today = now.date()
 
-    # Reset tracker each new day
     if _last_post_date != today:
         _posted_today = set()
         _last_post_date = today
 
     current_time = now.strftime("%H:%M")
 
-    from ai import fetch_packages
-    for post_time, operator in AUTO_POSTS:
+    for post_time, topic in AUTO_POSTS:
         if post_time in _posted_today:
             continue
         if current_time < post_time:
             continue
 
-        pkgs = fetch_packages()
-        if operator not in pkgs:
-            logger.warning("Scheduled post: operator %s not in sheet", operator)
+        content = generate_health_post(topic)
+        if not content:
+            logger.warning("Scheduled post: AI returned empty for topic '%s'", topic)
             _posted_today.add(post_time)
             continue
 
-        date_str = now.strftime("%d %B %Y")
-        message = (
-            f"আজকের {operator} অফার ({date_str})\n\n"
-            f"{pkgs[operator]}\n\n"
-            f"অর্ডার করতে ইনবক্সে মেসেজ করুন 📩"
-        )
-        post_to_page(message)
+        post_to_page(content)
         _posted_today.add(post_time)
-        logger.info("Auto-posted %s offer.", operator)
+        logger.info("Auto-posted health tip: %s", topic)
 
 
 # ─── Main loop ─────────────────────────────────────────────────────────────────
 
 def main():
-    # ── Seed existing IDs so we don't reply to old comments/messages ──
     logger.info("Loading existing comments and messages (will not reply to these)...")
     try:
         check_comments(reply=False)
@@ -304,8 +283,8 @@ def main():
     )
 
     logger.info("Polling every %ds. Press Ctrl+C to stop.", POLL_INTERVAL)
-    for t, op in AUTO_POSTS:
-        logger.info("Auto-post scheduled: %s at %s daily.", op, t)
+    for t, topic in AUTO_POSTS:
+        logger.info("Auto-post scheduled: '%s' at %s daily.", topic[:30], t)
     while True:
         time.sleep(POLL_INTERVAL)
         try:
