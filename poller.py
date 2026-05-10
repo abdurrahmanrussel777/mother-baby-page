@@ -102,8 +102,7 @@ def check_comments(reply=True):
                 post_text = post.get("message") or post.get("story") or ""
                 comment_text = comment.get("message", "")
                 ai_reply = generate_comment_reply(comment_text, post_text)
-                full_reply = ai_reply + "\n\n📩 বিস্তারিত জানতে আমাদের ইনবক্সে মেসেজ করুন।"
-                reply_to_comment(cid, full_reply)
+                reply_to_comment(cid, ai_reply)
 
 
 # ─── Messenger send ────────────────────────────────────────────────────────────
