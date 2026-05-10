@@ -13,7 +13,8 @@ from datetime import datetime, timezone, timedelta
 
 BD_TZ = timedelta(hours=6)  # Bangladesh = UTC+6
 from config import PAGE_ACCESS_TOKEN, PAGE_ID
-from ai import generate_comment_reply, generate_inbox_reply, generate_health_post
+from ai import generate_comment_reply, generate_inbox_reply
+from drive_posts import do_drive_post
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,19 +23,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 GRAPH = "https://graph.facebook.com/v25.0"
-POLL_INTERVAL = 15  # seconds between each check
+POLL_INTERVAL = 15  # seconds
 
-# ── Daily auto-post schedule ───────────────────────────────────────────────────
-AUTO_POSTS = [
-    ("12:00", "শিশুর বুকের দুধ খাওয়ানোর উপকারিতা ও সঠিক নিয়ম"),
-    ("12:10", "গর্ভকালীন পুষ্টি: মা ও শিশুর সুস্বাস্থ্যের জন্য কী খাবেন"),
-    ("12:20", "নবজাতক শিশুর যত্ন: প্রথম ৩০ দিনে কী করবেন"),
-    ("12:30", "শিশুর ঘুমের সঠিক অভ্যাস গড়ে তোলার উপায়"),
-    ("12:40", "শিশুর টিকা সময়সূচি: কোন বয়সে কোন টিকা দেবেন"),
-    ("12:50", "মায়ের প্রসব-পরবর্তী স্বাস্থ্য পুনরুদ্ধার"),
-]
+# ── Image post schedule: 10:00 AM – 11:00 PM BD time, every 30 min ────────────
+IMAGE_POST_TIMES = set()
+for _h in range(10, 24):          # 10 to 23 inclusive
+    IMAGE_POST_TIMES.add(f"{_h:02d}:00")
+    if _h < 23:
+        IMAGE_POST_TIMES.add(f"{_h:02d}:30")  # skip 23:30
 
-_posted_today: set = set()
+_image_posted_today: set = set()
 _last_post_date = None
 
 replied_comments: set = set()
@@ -225,46 +223,32 @@ def check_inbox(reply=True):
     send_message(sender_id, ai_reply)
 
 
-# ─── Daily scheduled post ─────────────────────────────────────────────────────
+# ─── Scheduled image posts ─────────────────────────────────────────────────────
 
-def post_to_page(message: str):
-    resp = requests.post(
-        f"{GRAPH}/{PAGE_ID}/feed",
-        data={"message": message, "access_token": PAGE_ACCESS_TOKEN},
-        timeout=10,
-    )
-    if resp.ok:
-        logger.info("Auto-post published. ID: %s", resp.json().get("id"))
-    else:
-        logger.error("Auto-post failed: %s", resp.text)
-
-
-def check_scheduled_post():
-    global _last_post_date, _posted_today
+def check_image_posts():
+    global _last_post_date, _image_posted_today
     now = datetime.now(timezone.utc) + BD_TZ
     today = now.date()
 
     if _last_post_date != today:
-        _posted_today = set()
+        _image_posted_today = set()
         _last_post_date = today
 
     current_time = now.strftime("%H:%M")
 
-    for post_time, topic in AUTO_POSTS:
-        if post_time in _posted_today:
+    for post_time in sorted(IMAGE_POST_TIMES):
+        if post_time in _image_posted_today:
             continue
         if current_time < post_time:
             continue
-
-        content = generate_health_post(topic)
-        if not content:
-            logger.warning("Scheduled post: AI returned empty for topic '%s'", topic)
-            _posted_today.add(post_time)
-            continue
-
-        post_to_page(content)
-        _posted_today.add(post_time)
-        logger.info("Auto-posted health tip: %s", topic)
+        _image_posted_today.add(post_time)  # mark first to prevent double-post
+        logger.info("Image post triggered at %s", post_time)
+        try:
+            success = do_drive_post()
+            if not success:
+                logger.warning("Image post at %s failed", post_time)
+        except Exception as e:
+            logger.error("Image post error at %s: %s", post_time, e)
 
 
 # ─── Main loop ─────────────────────────────────────────────────────────────────
@@ -282,13 +266,11 @@ def main():
         len(replied_messages),
     )
 
-    logger.info("Polling every %ds. Press Ctrl+C to stop.", POLL_INTERVAL)
-    for t, topic in AUTO_POSTS:
-        logger.info("Auto-post scheduled: '%s' at %s daily.", topic[:30], t)
+    logger.info("Polling every %ds. Image posts: 10:00–23:00 BD every 30min.", POLL_INTERVAL)
     while True:
         time.sleep(POLL_INTERVAL)
         try:
-            check_scheduled_post()
+            check_image_posts()
             check_comments()
             check_inbox()
         except Exception as e:

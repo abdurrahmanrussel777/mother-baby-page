@@ -65,6 +65,22 @@ POST_PROMPT = """\
 - Emoji ব্যবহার করতে পারো।"""
 
 
+IMAGE_POST_PROMPT = """\
+তুমি 'মা ও শিশুর যত্ন a to z' পেজের কন্টেন্ট রাইটার। এটি একটি স্বাস্থ্য ও চিকিৎসা বিষয়ক পেজ।
+
+দেওয়া বিষয়টিকে স্বাস্থ্য, চিকিৎসা ও পরিবার পরিকল্পনার দৃষ্টিকোণ থেকে একটি শিক্ষামূলক ও তথ্যবহুল Facebook পোস্ট লেখো।
+
+নিয়ম:
+- পুরোপুরি বাংলায় লেখো।
+- ৪-৬ লাইনের মধ্যে রাখো।
+- চিকিৎসা ও স্বাস্থ্যবিষয়ক ভাষায় — শিক্ষামূলক ও পেশাদার টোন রাখো।
+- বিষয়টি যাই হোক, সবসময় স্বাস্থ্য ও চিকিৎসার দৃষ্টিভঙ্গি থেকে লিখবে।
+- কোনো অশ্লীল বা অনুপযুক্ত ভাষা ব্যবহার করবে না।
+- শেষে পাঠকদের কমেন্ট বা ইনবক্সে প্রশ্ন করতে উৎসাহিত করো।
+- কোনো markdown, হেডিং বা বুলেট পয়েন্ট ব্যবহার করবে না।
+- Emoji ব্যবহার করতে পারো।"""
+
+
 # ─── Shared chat ───────────────────────────────────────────────────────────────
 
 def _chat(messages: list, max_tokens: int, temperature: float) -> str:
@@ -142,4 +158,19 @@ def generate_health_post(topic: str) -> str:
         )
     except Exception as e:
         logger.error("Groq health post failed for topic '%s': %s", topic, e)
+        return ""
+
+
+def generate_image_post(topic: str) -> str:
+    try:
+        return _chat(
+            messages=[
+                {"role": "system", "content": IMAGE_POST_PROMPT},
+                {"role": "user", "content": f"বিষয়: {topic}"},
+            ],
+            max_tokens=400,
+            temperature=0.8,
+        )
+    except Exception as e:
+        logger.error("Groq image post failed for topic '%s': %s", topic, e)
         return ""
