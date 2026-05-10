@@ -252,6 +252,19 @@ def check_image_posts():
 
 # ─── Main loop ─────────────────────────────────────────────────────────────────
 
+def seed_past_image_times():
+    """Mark all already-passed post times today as done so bot doesn't flood on restart."""
+    global _last_post_date, _image_posted_today
+    now = datetime.now(timezone.utc) + BD_TZ
+    _last_post_date = now.date()
+    current_time = now.strftime("%H:%M")
+    for post_time in IMAGE_POST_TIMES:
+        if post_time <= current_time:
+            _image_posted_today.add(post_time)
+    logger.info("Seeded %d past image post slots (current BD time: %s).",
+                len(_image_posted_today), current_time)
+
+
 def main():
     logger.info("Loading existing comments and messages (will not reply to these)...")
     try:
@@ -265,6 +278,7 @@ def main():
         len(replied_messages),
     )
 
+    seed_past_image_times()
     logger.info("Polling every %ds. Image posts: 10:00–23:00 BD every 30min.", POLL_INTERVAL)
     while True:
         time.sleep(POLL_INTERVAL)
